@@ -138,7 +138,7 @@ echo "1. Copy the dist/ directory to your Rust project"
 echo "2. Link against the static library in your build.rs"
 echo ""
 echo "Updating bundled Rust library..."
-if [ -d "${SCRIPT_DIR}/pdf_text/pdfium-render-bundled/" ]; then
-    cp -r "${OUTPUT_DIR}" "${SCRIPT_DIR}/pdf_text/pdfium-render-bundled/"
-    echo "Updated bundled library in pdf_text project"
+if [ -d "${SCRIPT_DIR}/pdfczar/pdfium-render-bundled/" ]; then
+    cp -r "${OUTPUT_DIR}" "${SCRIPT_DIR}/pdfczar/pdfium-render-bundled/"
+    echo "Updated bundled library in pdfczar project"
 fi
