@@ -1,0 +1,24 @@
+# Build artifacts and downloaded dependencies
+build/
+
+# Output distribution
+dist/
+
+# Temporary and test files
+test_files/
+trash/
+*.tmp
+*.log
+
+# macOS
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup files
+*~
+*.bak
