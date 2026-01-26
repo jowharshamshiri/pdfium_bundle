@@ -22,3 +22,4 @@ trash/
 # Backup files
 *~
 *.bak
+.ws/
