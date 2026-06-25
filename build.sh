@@ -6,9 +6,18 @@ set -e
 # Creates a self-contained PDFium distribution with no dynamic dependencies
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build"
+# Build scratch (depot_tools clone + full pdfium source tree + ninja objects —
+# ~14 GiB, disposable once `dist/` is produced). Honour the monorepo's central
+# build dir when provided: `PDFIUM_BUILD_DIR` wins, else `$BUILD_DIR/pdfium`
+# (the dir `dx`/scripts/lib/config.sh exports), else a local `build/` for
+# standalone use. This keeps the heavy scratch tree out of the source checkout
+# and alongside the other build artifacts under machinefabric/build/.
+BUILD_DIR="${PDFIUM_BUILD_DIR:-${BUILD_DIR:+${BUILD_DIR}/pdfium}}"
+BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/build}"
 DEPOT_TOOLS_DIR="${BUILD_DIR}/depot_tools"
 PDFIUM_DIR="${BUILD_DIR}/pdfium"
+# The distributable static lib + headers stay local — cartridges link against
+# `pdfium_bundle/dist/` via pkg-config, and it's small (~25 MiB).
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
 
 echo "=== PDFium Bundle Builder ==="
