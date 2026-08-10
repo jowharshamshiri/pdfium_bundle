@@ -16,9 +16,12 @@ BUILD_DIR="${PDFIUM_BUILD_DIR:-${BUILD_DIR:+${BUILD_DIR}/pdfium}}"
 BUILD_DIR="${BUILD_DIR:-${SCRIPT_DIR}/build}"
 DEPOT_TOOLS_DIR="${BUILD_DIR}/depot_tools"
 PDFIUM_DIR="${BUILD_DIR}/pdfium"
-# The distributable static lib + headers stay local — cartridges link against
-# `pdfium_bundle/dist/` via pkg-config, and it's small (~25 MiB).
-OUTPUT_DIR="${SCRIPT_DIR}/dist"
+# The static lib + headers are a build PRODUCT and go with the rest of the
+# build output — never into this source tree, and never copied into a consumer's
+# tree. Consumers are TOLD where it is (pdfium-render-bundled reads
+# PDFIUM_BUNDLE_DIST_DIR), which is the only arrangement in which a fresh clone
+# of either repository builds without someone remembering to copy a directory.
+OUTPUT_DIR="${PDFIUM_BUNDLE_DIST_DIR:-${BUILD_DIR}/dist}"
 
 echo "=== PDFium Bundle Builder ==="
 echo "Build directory: ${BUILD_DIR}"
@@ -142,12 +145,11 @@ echo "PDFium static library: ${OUTPUT_DIR}/lib/libpdfium.a"
 echo "Headers: ${OUTPUT_DIR}/include/"
 echo "pkg-config: ${OUTPUT_DIR}/pdfium.pc"
 echo ""
-echo "To use in your Rust project:"
-echo "1. Copy the dist/ directory to your Rust project"
-echo "2. Link against the static library in your build.rs"
+echo "To use it, point the consuming crate at this directory:"
 echo ""
-echo "Updating bundled Rust library..."
-if [ -d "${SCRIPT_DIR}/../pdfium-render-bundled/" ]; then
-    cp -r "${OUTPUT_DIR}" "${SCRIPT_DIR}/../pdfium-render-bundled/"
-    echo "Updated bundled library in pdfcartridge project"
-fi
+echo "    PDFIUM_BUNDLE_DIST_DIR=${OUTPUT_DIR}"
+echo ""
+echo "Nothing is copied anywhere. Copying the product into a consumer's source"
+echo "tree is what made both repositories un-buildable from a fresh clone: the"
+echo "copy was gitignored, so the crate expected a directory that only existed"
+echo "on the machine that had run this script."

@@ -2,11 +2,17 @@
 PDFium Bundle Builder (Windows / Windows PowerShell 5.1)
 
 Windows port of build.sh. Produces a self-contained static PDFium library for
-MSVC/Rust linking and stages it into the bundled Rust crate:
+MSVC/Rust linking, into a BUILD directory:
 
-    dist\lib\pdfium.lib       MSVC static library (rustc-link-lib=static=pdfium)
-    dist\include\public\      PDFium public C headers
-    -> copied into ..\pdfium-render-bundled\dist\
+    <dist>\lib\pdfium.lib     MSVC static library (rustc-link-lib=static=pdfium)
+    <dist>\include\public\    PDFium public C headers
+
+<dist> is $env:PDFIUM_BUNDLE_DIST_DIR when set, else "dist" under the build
+directory. The product is never written into this source tree and never copied
+into a consumer's: consumers are told where it is via PDFIUM_BUNDLE_DIST_DIR.
+Copying it into the consuming crate is what made both repositories
+un-buildable from a fresh clone — the copy was gitignored, so the crate
+expected a directory that existed only on the machine that ran this script.
 
 It mirrors the macOS/Linux build.sh flow:
     depot_tools -> gclient sync pdfium -> gn gen (static) -> ninja -> archive.
@@ -34,10 +40,13 @@ $ErrorActionPreference = "Stop"
 
 # --- paths (mirror build.sh) ---------------------------------------------
 $ScriptDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
-$BuildDir      = Join-Path $ScriptDir "build"
+$BuildDir      = if ($env:PDFIUM_BUILD_DIR) { $env:PDFIUM_BUILD_DIR }
+                 elseif ($env:BUILD_DIR) { Join-Path $env:BUILD_DIR "pdfium" }
+                 else { Join-Path $ScriptDir "build" }
 $DepotToolsDir = Join-Path $BuildDir "depot_tools"
 $PdfiumDir     = Join-Path $BuildDir "pdfium"
-$OutputDir     = Join-Path $ScriptDir "dist"
+$OutputDir     = if ($env:PDFIUM_BUNDLE_DIST_DIR) { $env:PDFIUM_BUNDLE_DIST_DIR }
+                 else { Join-Path $BuildDir "dist" }
 $OutRelease    = "out/Release"   # gn/ninja use forward slashes; this is relative to $PdfiumDir
 
 Write-Host "=== PDFium Bundle Builder (Windows) ==="
@@ -227,14 +236,8 @@ Write-Host "=== Build Complete ==="
 Write-Host "PDFium static library: $libOut"
 Write-Host "Headers:               $incDir\public"
 Write-Host ""
-$bundledCrate = Join-Path (Split-Path -Parent $ScriptDir) "pdfium-render-bundled"
-if (Test-Path -LiteralPath $bundledCrate) {
-    Write-Host "Updating bundled Rust library at $bundledCrate ..."
-    $bundledDist = Join-Path $bundledCrate "dist"
-    if (Test-Path -LiteralPath $bundledDist) { Remove-Item -LiteralPath $bundledDist -Recurse -Force }
-    Copy-Item -LiteralPath $OutputDir -Destination $bundledDist -Recurse -Force
-    Write-Host "Updated bundled library (dist\) in pdfium-render-bundled."
-}
-else {
-    Write-Host "Note: ..\pdfium-render-bundled not found; skipped staging."
-}
+Write-Host "To use it, point the consuming crate at this directory:"
+Write-Host ""
+Write-Host "    PDFIUM_BUNDLE_DIST_DIR=$OutputDir"
+Write-Host ""
+Write-Host "Nothing is copied anywhere; the consuming crate reads that variable."
