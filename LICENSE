@@ -1,0 +1,65 @@
+                       PDFIUM BUNDLE — LICENCE AND NOTICES
+
+This repository builds and packages PDFium. It does not author it.
+
+PDFium is the PDF rendering library developed by Google and the Chromium
+project, and it is the work of those authors. Everything this repository
+distributes in dist/ — the static library and its headers — is compiled from
+their source, unmodified. Credit for the library belongs to them; please direct
+bug reports about PDF rendering upstream, at https://pdfium.googlesource.com/.
+
+The build scripts (build.sh, build.ps1) are the original work of this
+repository's author and are offered under the same BSD 3-Clause terms below, so
+that the whole is distributable as one unit.
+
+--------------------------------------------------------------------------------
+PDFIUM
+--------------------------------------------------------------------------------
+
+Copyright 2014 The PDFium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+    * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY COMPONENTS INSIDE PDFIUM
+--------------------------------------------------------------------------------
+
+PDFium is not a single-licence work. Its source tree incorporates a number of
+third-party libraries — among them FreeType, libjpeg-turbo, libopenjpeg, libpng,
+zlib, and Google's own Skia and Abseil — each under its own licence, several of
+which carry their own attribution requirements.
+
+A binary built from PDFium therefore contains code under those licences, and
+distributing it means honouring them. This repository does not vendor PDFium's
+source, so the authoritative list is not reproduced here: it is the LICENSE file
+and the third_party/ directory of the PDFium checkout the build fetches, at the
+revision recorded by your build. Consult those before redistributing a binary.
+
+If you need a self-contained notice file for a product, generate it from the
+PDFium checkout your build produced rather than copying this file — only that
+checkout knows which components and versions actually went in.
+
+This summary is a pointer, not legal advice.
