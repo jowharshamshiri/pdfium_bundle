@@ -116,33 +116,67 @@ $env:LIBPATH = $null
 Remove-Item Env:CL   -ErrorAction SilentlyContinue
 Remove-Item Env:_CL_ -ErrorAction SilentlyContinue
 
-# --- Step 1: depot_tools --------------------------------------------------
-if (-not (Test-Path -LiteralPath $DepotToolsDir)) {
-    Write-Host "Downloading depot_tools..."
-    Invoke-Native -File "git" -WorkingDirectory $BuildDir -Arguments @(
-        "clone", "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
-    )
-}
+# Every step below is guarded on evidence that it FINISHED, never on a
+# directory existing. The two are not the same, and treating them as the same
+# is what made this script fragile: a clone or a sync killed part way — a lost
+# network, a full disk, a closed laptop — left the directory behind, so every
+# later run skipped the step and failed somewhere further down, forever. The
+# fetches here take tens of minutes and pull ~14 GiB, so being interrupted is
+# the normal case and not the exotic one. build.sh carries the same rule.
 
 $gclient = Join-Path $DepotToolsDir "gclient.bat"
 $gn      = Join-Path $DepotToolsDir "gn.bat"
 $ninja   = Join-Path $DepotToolsDir "ninja.bat"
+
+# --- Step 1: depot_tools --------------------------------------------------
+# Guarded on the tool this needs, not on the directory holding it. A partial
+# clone is a directory with no gclient.bat in it, and is replaced rather than
+# trusted. The clone lands under a scratch name and is renamed into place, so
+# the guarded path only ever appears complete.
+if (-not (Test-Path -LiteralPath $gclient)) {
+    if (Test-Path -LiteralPath $DepotToolsDir) {
+        Write-Host "depot_tools is present but has no gclient.bat - discarding a partial clone"
+        Remove-Item -LiteralPath $DepotToolsDir -Recurse -Force
+    }
+    Write-Host "Downloading depot_tools..."
+    $depotPartial = "$DepotToolsDir.partial"
+    if (Test-Path -LiteralPath $depotPartial) {
+        Remove-Item -LiteralPath $depotPartial -Recurse -Force
+    }
+    Invoke-Native -File "git" -WorkingDirectory $BuildDir -Arguments @(
+        "clone", "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+        $depotPartial
+    )
+    Move-Item -LiteralPath $depotPartial -Destination $DepotToolsDir
+}
 
 # First gclient run bootstraps depot_tools' bundled Python/git on Windows.
 Write-Host "Bootstrapping depot_tools (first run may take a while)..."
 & $gclient | Out-Null  # may return non-zero while only printing help; that is fine
 
 # --- Step 2: fetch PDFium source -----------------------------------------
-if (-not (Test-Path -LiteralPath $PdfiumDir)) {
-    Write-Host "Downloading PDFium source (gclient sync, multi-GB)..."
-    Invoke-Native -File $gclient -WorkingDirectory $BuildDir -Arguments @(
-        "config", "--unmanaged", "https://pdfium.googlesource.com/pdfium.git"
-    )
+# `gclient sync` IS the resync - it is incremental and idempotent, and running
+# it on a half-fetched tree is precisely how that tree gets finished. So the
+# stamp is written by us after sync returns 0, and its absence means "sync",
+# not "the directory is missing". Set RESYNC=1 to force one, as in build.sh -
+# this script is env-var driven throughout and the two must agree.
+$syncedStamp = Join-Path $BuildDir ".pdfium-synced"
+if ((-not (Test-Path -LiteralPath $syncedStamp)) -or ($env:RESYNC -eq "1")) {
+    Remove-Item -LiteralPath $syncedStamp -Force -ErrorAction SilentlyContinue
+    # The gclient config file is written once; rewriting it on every run would
+    # discard any local customisation for no gain.
+    if (-not (Test-Path -LiteralPath (Join-Path $BuildDir ".gclient"))) {
+        Write-Host "Configuring gclient for PDFium..."
+        Invoke-Native -File $gclient -WorkingDirectory $BuildDir -Arguments @(
+            "config", "--unmanaged", "https://pdfium.googlesource.com/pdfium.git"
+        )
+    }
+    Write-Host "Syncing PDFium source (multi-GB on a first run)..."
     Invoke-Native -File $gclient -WorkingDirectory $BuildDir -Arguments @("sync")
-}
-
-if (-not (Test-Path -LiteralPath $PdfiumDir)) {
-    throw "PDFium source directory not found after gclient sync: $PdfiumDir"
+    if (-not (Test-Path -LiteralPath $PdfiumDir)) {
+        throw "PDFium source directory not found after gclient sync: $PdfiumDir"
+    }
+    New-Item -ItemType File -Path $syncedStamp -Force | Out-Null
 }
 
 # --- Step 3: configure the static build ----------------------------------
@@ -175,10 +209,16 @@ Write-Host "Building PDFium (ninja)..."
 Invoke-Native -File $ninja -WorkingDirectory $PdfiumDir -Arguments @("-C", $OutRelease, "pdfium")
 
 # --- Step 5: assemble the distribution -----------------------------------
+# Assembled under a staging name and PUBLISHED by rename. Populating
+# $OutputDir in place meant that an interrupted run left a directory that
+# looked like a distribution and was not - a truncated pdfium.lib, or headers
+# that never arrived - and the consumer linked against it and failed with an
+# error about a symbol rather than about a half-built bundle.
 Write-Host "Creating distribution package..."
-if (Test-Path -LiteralPath $OutputDir) { Remove-Item -LiteralPath $OutputDir -Recurse -Force }
-$libDir = Join-Path $OutputDir "lib"
-$incDir = Join-Path $OutputDir "include"
+$StagingDir = "$OutputDir.staging"
+if (Test-Path -LiteralPath $StagingDir) { Remove-Item -LiteralPath $StagingDir -Recurse -Force }
+$libDir = Join-Path $StagingDir "lib"
+$incDir = Join-Path $StagingDir "include"
 New-Item -ItemType Directory -Path $libDir -Force | Out-Null
 New-Item -ItemType Directory -Path $incDir -Force | Out-Null
 
@@ -231,7 +271,18 @@ $publicSrc = Join-Path $PdfiumDir "public"
 if (-not (Test-Path -LiteralPath $publicSrc)) { throw "PDFium public headers not found: $publicSrc" }
 Copy-Item -LiteralPath $publicSrc -Destination $incDir -Recurse -Force
 
-# --- Step 6: stage into the bundled Rust crate ---------------------------
+# --- Step 6: publish ------------------------------------------------------
+# Two renames, so $OutputDir goes from the previous complete distribution
+# straight to this one and is never observed half-populated.
+$previousDir = "$OutputDir.previous"
+if (Test-Path -LiteralPath $previousDir) { Remove-Item -LiteralPath $previousDir -Recurse -Force }
+if (Test-Path -LiteralPath $OutputDir) { Move-Item -LiteralPath $OutputDir -Destination $previousDir }
+Move-Item -LiteralPath $StagingDir -Destination $OutputDir
+if (Test-Path -LiteralPath $previousDir) { Remove-Item -LiteralPath $previousDir -Recurse -Force }
+
+$libOut = Join-Path (Join-Path $OutputDir "lib") "pdfium.lib"
+$incDir = Join-Path $OutputDir "include"
+
 Write-Host "=== Build Complete ==="
 Write-Host "PDFium static library: $libOut"
 Write-Host "Headers:               $incDir\public"
