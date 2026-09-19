@@ -22,6 +22,14 @@ FAILED=0
 # what counts — which is why `fail` stops the case rather than noting it.
 fail() {
     echo "  FAIL: $*" >&2
+    # The build's own output, when there is one to show. Every call site that
+    # wanted this wrote `fail "..."; tail -20 "$out" >&2` — and `fail` exits,
+    # so the tail never ran and every failure reported a headline with nothing
+    # under it. Two separate causes were debugged by hand before anyone
+    # noticed the harness had been silent all along.
+    if [ -n "${FAIL_OUTPUT:-}" ] && [ -s "${FAIL_OUTPUT}" ]; then
+        sed 's/^/    | /' "${FAIL_OUTPUT}" | tail -20 >&2
+    fi
     exit 1
 }
 
@@ -41,12 +49,24 @@ make_stubs() {
     local bin="$1" log="$2"
     mkdir -p "$bin"
 
+    # `sync --revision pdfium@<sha>` records the sha it was asked for, so the
+    # stub `git rev-parse` below can answer with it. The script verifies that
+    # the checkout is at the pinned revision, and a stub that always answered
+    # the same thing would either fail every case or pass one that a real
+    # mismatch would fail.
     cat > "$bin/gclient" <<EOF
 #!/bin/bash
 echo "gclient \$*" >> "$log"
 case "\$1" in
     config) : > .gclient ;;
-    sync)   mkdir -p pdfium ;;
+    sync)
+        mkdir -p pdfium
+        for arg in "\$@"; do
+            case "\$arg" in
+                pdfium@*) printf '%s' "\${arg#pdfium@}" > pdfium/.stub-revision ;;
+            esac
+        done
+        ;;
 esac
 exit 0
 EOF
@@ -55,10 +75,26 @@ EOF
     # clone produces is the one that actually runs. The stub clone therefore
     # has to install a working gclient, not a placeholder — with a placeholder
     # every case fails for a reason that has nothing to do with the guards.
+    # `git -C <dir> rev-parse HEAD` puts the verb in \$3, not \$1, so the
+    # subcommand is found by scanning rather than by position. Matching on \$1
+    # alone made every rev-parse fall through and answer nothing, which read
+    # as "the checkout is at no revision at all".
     cat > "$bin/git" <<EOF
 #!/bin/bash
 echo "git \$*" >> "$log"
-case "\$1" in
+# The verb is the first argument that is neither an option nor the directory
+# that -C consumes.
+verb=""
+skip_next=0
+for arg in "\$@"; do
+    if [ "\$skip_next" = "1" ]; then skip_next=0; continue; fi
+    case "\$arg" in
+        -C) skip_next=1; continue ;;
+        -*) continue ;;
+    esac
+    verb="\$arg"; break
+done
+case "\$verb" in
     clone)
         # Last argument is the destination.
         dest="\${@: -1}"
@@ -66,7 +102,21 @@ case "\$1" in
         cp "$bin/gclient" "\$dest/gclient"
         chmod +x "\$dest/gclient"
         ;;
-    rev-parse) echo "abc1234" ;;
+    rev-parse)
+        # Answer for the tree being asked about: \`git -C <dir> rev-parse HEAD\`.
+        # What the stub sync recorded is what the checkout "is at".
+        dir="."
+        prev=""
+        for arg in "\$@"; do
+            case "\$prev" in -C) dir="\$arg" ;; esac
+            prev="\$arg"
+        done
+        if [ -f "\$dir/.stub-revision" ]; then
+            cat "\$dir/.stub-revision"
+        else
+            echo "abc1234"
+        fi
+        ;;
 esac
 exit 0
 EOF
@@ -101,6 +151,9 @@ run_build() {
     local build_dir="$1" log="$2" out="$3"
     local bin="${build_dir}/.stubs"
     make_stubs "$bin" "$log"
+    # So `fail` can show what the build said, from any case, without each one
+    # remembering to.
+    FAIL_OUTPUT="$out"
     PATH="$bin:$PATH" PDFIUM_BUILD_DIR="$build_dir" \
         bash "$ROOT/build.sh" > "$out" 2>&1
 }
@@ -199,6 +252,40 @@ echo "TEST9704 — a build that fails publishes nothing"
     exit 0
 )
 case_result $? "a failed build leaves no distribution for a consumer to link against"
+
+echo "TEST9705 — the sync names the pinned revision, not whatever is newest"
+(
+    work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+    log="$work/log"; : > "$log"
+    pinned="$(tr -d '[:space:]' < "$ROOT/pdfium-revision.txt")"
+    [ -n "$pinned" ] || fail "pdfium-revision.txt is empty"
+    run_build "$work/build" "$log" "$work/out" || { fail "build failed"; exit 1; }
+    # An unpinned `gclient sync` takes PDFium's tip of main, which is how a
+    # Windows SDK bump nobody asked for stopped this build: the revision has
+    # to be part of the sync, because gclient resolves DEPS against whatever
+    # it synced.
+    grep -q "^gclient sync --revision pdfium@${pinned}\$" "$log" ||
+        fail "the sync did not name the pinned revision; log says: $(grep '^gclient sync' "$log")"
+    exit 0
+)
+case_result $? "the build syncs the revision this bundle pins"
+
+echo "TEST9706 — moving the pin resyncs a tree that is already built"
+(
+    work="$(scratch)"; trap 'rm -rf "$work"' EXIT
+    log="$work/log"; : > "$log"
+    run_build "$work/build" "$log" "$work/out" || { fail "first build failed"; exit 1; }
+    # The stamp records WHICH revision was synced. Recording only that a sync
+    # happened would leave every machine with an existing tree on the old
+    # revision after a bump, silently.
+    printf '%s\n' "0000000000000000000000000000000000000000" > "$work/build/.pdfium-synced"
+    : > "$log"
+    run_build "$work/build" "$log" "$work/out" || { fail "second build failed"; exit 1; }
+    grep -q "^gclient sync" "$log" ||
+        fail "a stamp naming another revision was honoured; the pin cannot be moved"
+    exit 0
+)
+case_result $? "a stamp from a different revision is not mistaken for this one"
 
 echo
 echo "${PASSED} passed, ${FAILED} failed"

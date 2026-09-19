@@ -49,6 +49,35 @@ $OutputDir     = if ($env:PDFIUM_BUNDLE_DIST_DIR) { $env:PDFIUM_BUNDLE_DIST_DIR 
                  else { Join-Path $BuildDir "dist" }
 $OutRelease    = "out/Release"   # gn/ninja use forward slashes; this is relative to $PdfiumDir
 
+# The PDFium revision this bundle builds. Read from pdfium-revision.txt beside
+# this script so build.ps1 and build.sh cannot drift apart: two copies of a
+# pin is two pins.
+#
+# Pinned, and not as tidiness. `gclient sync` with no revision takes PDFium's
+# tip of main, which means this script built whatever Google had landed that
+# morning -- and on 2026-07-29 what they landed was a major Windows SDK bump.
+# Chromium commit 06f91b7a, "Update Win toolchain to SDK 10.0.28000.2270",
+# moved `SDK_VERSION` in build/toolchain/win/setup_toolchain.py from
+# 10.0.26100.0 to 10.0.28000.0, and that constant has no fallback: the build
+# stops with
+#
+#     Exception: Path "...\Windows Kits\10\include\10.0.28000.0\um" from
+#     environment variable "include" does not exist.
+#
+# Chromium gets that SDK from Google's internal toolchain download, which is
+# exactly what DEPOT_TOOLS_WIN_TOOLCHAIN=0 turns off, and Microsoft does not
+# publish a 28000 component: the Visual Studio installer catalogue offers
+# Windows11SDK.22621 and .26100 and nothing newer. So an external build cannot
+# satisfy tip of main at all, however the machine is provisioned.
+#
+# This revision is the last one whose DEPS still names a chromium/src/build
+# with SDK_VERSION = 10.0.26100.0 -- a version the installer HAS. Moving the
+# pin forward means checking that first.
+$PdfiumRevision = (Get-Content -LiteralPath (Join-Path $ScriptDir "pdfium-revision.txt") -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($PdfiumRevision)) {
+    throw "pdfium-revision.txt is empty; this build has no revision to sync to"
+}
+
 Write-Host "=== PDFium Bundle Builder (Windows) ==="
 Write-Host "Build directory:  $BuildDir"
 Write-Host "Output directory: $OutputDir"
@@ -160,8 +189,16 @@ Write-Host "Bootstrapping depot_tools (first run may take a while)..."
 # stamp is written by us after sync returns 0, and its absence means "sync",
 # not "the directory is missing". Set RESYNC=1 to force one, as in build.sh -
 # this script is env-var driven throughout and the two must agree.
+#
+# The stamp holds the revision it was written for, so raising the pin is
+# enough to cause a resync. A stamp that only recorded THAT a sync happened
+# would leave every machine with an existing build tree on the old revision,
+# silently, with nothing to say the pin had moved.
 $syncedStamp = Join-Path $BuildDir ".pdfium-synced"
-if ((-not (Test-Path -LiteralPath $syncedStamp)) -or ($env:RESYNC -eq "1")) {
+$syncedAt    = if (Test-Path -LiteralPath $syncedStamp) {
+                   (Get-Content -LiteralPath $syncedStamp -Raw).Trim()
+               } else { "" }
+if (($syncedAt -ne $PdfiumRevision) -or ($env:RESYNC -eq "1")) {
     Remove-Item -LiteralPath $syncedStamp -Force -ErrorAction SilentlyContinue
     # The gclient config file is written once; rewriting it on every run would
     # discard any local customisation for no gain.
@@ -171,12 +208,28 @@ if ((-not (Test-Path -LiteralPath $syncedStamp)) -or ($env:RESYNC -eq "1")) {
             "config", "--unmanaged", "https://pdfium.googlesource.com/pdfium.git"
         )
     }
-    Write-Host "Syncing PDFium source (multi-GB on a first run)..."
-    Invoke-Native -File $gclient -WorkingDirectory $BuildDir -Arguments @("sync")
+    # `--revision` pins PDFium itself; its DEPS then pin everything under it,
+    # including the chromium/src/build that decides which Windows SDK the
+    # toolchain asks for. Syncing and then checking out separately would leave
+    # DEPS resolved against the wrong revision: gclient runs the DEPS of
+    # whatever it synced, so the revision has to be part of the sync.
+    Write-Host "Syncing PDFium source at $PdfiumRevision (multi-GB on a first run)..."
+    Invoke-Native -File $gclient -WorkingDirectory $BuildDir -Arguments @(
+        "sync", "--revision", "pdfium@$PdfiumRevision"
+    )
     if (-not (Test-Path -LiteralPath $PdfiumDir)) {
         throw "PDFium source directory not found after gclient sync: $PdfiumDir"
     }
-    New-Item -ItemType File -Path $syncedStamp -Force | Out-Null
+    # What was asked for is what is there. A sync that quietly landed on some
+    # other revision would build a different PDFium than this bundle claims,
+    # and the SDK failure it guards against would come back with no sign of
+    # why.
+    $at = (& git -C $PdfiumDir rev-parse HEAD 2>$null).Trim()
+    if ($at -ne $PdfiumRevision) {
+        throw ("PDFium synced to $at but this bundle pins $PdfiumRevision; " +
+               "the checkout does not match the revision it was told to use")
+    }
+    Set-Content -LiteralPath $syncedStamp -Value $PdfiumRevision -Encoding ASCII
 }
 
 # --- Step 3: configure the static build ----------------------------------

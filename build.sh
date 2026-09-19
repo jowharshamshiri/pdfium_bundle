@@ -23,6 +23,33 @@ PDFIUM_DIR="${BUILD_DIR}/pdfium"
 # of either repository builds without someone remembering to copy a directory.
 OUTPUT_DIR="${PDFIUM_BUNDLE_DIST_DIR:-${BUILD_DIR}/dist}"
 
+# The PDFium revision this bundle builds. Read from pdfium-revision.txt beside
+# this script, the same file build.ps1 reads: two copies of a pin is two pins.
+#
+# Pinned, and not as tidiness. `gclient sync` with no revision takes PDFium's
+# tip of main, so this script built whatever Google had landed that morning.
+# On 2026-07-29 what they landed was a major Windows SDK bump: Chromium commit
+# 06f91b7a, "Update Win toolchain to SDK 10.0.28000.2270", moved SDK_VERSION
+# in build/toolchain/win/setup_toolchain.py from 10.0.26100.0 to 10.0.28000.0.
+# That constant has no fallback, Chromium gets the SDK from Google's internal
+# toolchain download (which DEPOT_TOOLS_WIN_TOOLCHAIN=0 turns off), and
+# Microsoft publishes no 28000 component -- the Visual Studio installer
+# catalogue stops at Windows11SDK.26100. The Windows build stopped dead and
+# nothing in this repository had changed.
+#
+# It broke Windows first, but the floating sync was never Windows-specific:
+# this script had the same unpinned fetch, and simply had not yet been handed
+# a revision that broke it.
+#
+# This revision is the last whose DEPS names a chromium/src/build with
+# SDK_VERSION = 10.0.26100.0, a version the installer HAS. Moving the pin
+# forward means checking that first.
+PDFIUM_REVISION="$(tr -d '[:space:]' < "${SCRIPT_DIR}/pdfium-revision.txt")"
+if [ -z "${PDFIUM_REVISION}" ]; then
+    echo "ERROR: pdfium-revision.txt is empty; this build has no revision to sync to." >&2
+    exit 1
+fi
+
 echo "=== PDFium Bundle Builder ==="
 echo "Build directory: ${BUILD_DIR}"
 echo "Output directory: ${OUTPUT_DIR}"
@@ -64,8 +91,13 @@ export PATH="${DEPOT_TOOLS_DIR}:${PATH}"
 # it on a half-fetched tree is precisely how that tree gets finished. So the
 # stamp is written by us after sync returns 0, and its absence means "sync",
 # not "the directory is missing". Set RESYNC=1 to force one.
+# The stamp holds the revision it was written for, so raising the pin is
+# enough to cause a resync. A stamp that only recorded THAT a sync happened
+# would leave every machine with an existing build tree on the old revision,
+# silently, with nothing to say the pin had moved.
 SYNCED_STAMP="${BUILD_DIR}/.pdfium-synced"
-if [ ! -f "${SYNCED_STAMP}" ] || [ "${RESYNC:-0}" = "1" ]; then
+SYNCED_AT="$(cat "${SYNCED_STAMP}" 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "${SYNCED_AT}" != "${PDFIUM_REVISION}" ] || [ "${RESYNC:-0}" = "1" ]; then
     rm -f "${SYNCED_STAMP}"
     cd "${BUILD_DIR}"
     # The gclient config file is written once; rewriting it on every run would
@@ -74,13 +106,25 @@ if [ ! -f "${SYNCED_STAMP}" ] || [ "${RESYNC:-0}" = "1" ]; then
         echo "Configuring gclient for PDFium..."
         gclient config --unmanaged https://pdfium.googlesource.com/pdfium.git
     fi
-    echo "Syncing PDFium source (multi-GB on a first run)..."
-    gclient sync
+    # `--revision` pins PDFium itself; its DEPS then pin everything under it,
+    # including the chromium/src/build that decides which Windows SDK the
+    # toolchain asks for. Syncing and then checking out separately would leave
+    # DEPS resolved against the wrong revision: gclient runs the DEPS of
+    # whatever it synced, so the revision has to be part of the sync.
+    echo "Syncing PDFium source at ${PDFIUM_REVISION} (multi-GB on a first run)..."
+    gclient sync --revision "pdfium@${PDFIUM_REVISION}"
     if [ ! -d "${PDFIUM_DIR}" ]; then
         echo "ERROR: gclient sync reported success but ${PDFIUM_DIR} does not exist." >&2
         exit 1
     fi
-    touch "${SYNCED_STAMP}"
+    # What was asked for is what is there. A sync that quietly landed on some
+    # other revision would build a different PDFium than this bundle claims.
+    AT="$(git -C "${PDFIUM_DIR}" rev-parse HEAD)"
+    if [ "${AT}" != "${PDFIUM_REVISION}" ]; then
+        echo "ERROR: PDFium synced to ${AT} but this bundle pins ${PDFIUM_REVISION}." >&2
+        exit 1
+    fi
+    printf '%s\n' "${PDFIUM_REVISION}" > "${SYNCED_STAMP}"
 fi
 
 cd "${PDFIUM_DIR}"
@@ -182,7 +226,14 @@ echo "Library size: $(ls -lh "${STAGING_DIR}/lib/libpdfium.a" | awk '{print $5}'
 # fails the build rather than printing a warning nobody reads and publishing
 # an incomplete bundle anyway.
 cd "${PDFIUM_DIR}"
-cp -r public/ "${STAGING_DIR}/include/"
+# `public` without a trailing slash, and the destination named exactly. BSD cp
+# (macOS) reads `cp -r public/ dest/` as "copy the CONTENTS of public into
+# dest" and GNU cp reads it as "copy the directory public into dest", so the
+# same line published headers to include/public on Linux and to include/ on a
+# Mac -- where the check below then refused the build, correctly, for a
+# distribution this script had just mislaid itself.
+mkdir -p "${STAGING_DIR}/include"
+cp -r public "${STAGING_DIR}/include/public"
 if [ ! -f "${STAGING_DIR}/include/public/fpdfview.h" ]; then
     echo "ERROR: headers were copied but ${STAGING_DIR}/include/public/fpdfview.h is missing." >&2
     exit 1
